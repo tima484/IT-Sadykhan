@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-flask
-requests
-=======
-flask
-requests
->>>>>>> 82e0fe7a99627d010fc25a3f0784bb21fdafd327
+flask==2.2.3
+requests==2.31.0
+
