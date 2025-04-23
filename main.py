@@ -168,4 +168,16 @@ def telegram_bot():
                 subscribed_chats.discard(chat_id)
                 send_telegram_message(chat_id, "❌ Вы отписаны от уведомлений.")
             else:
-                send_telegram_message(chat_id, "Используйте /start_
+                send_telegram_message(chat_id, "Используйте /start или /stop.")
+
+        time.sleep(2)
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+if __name__ == "__main__":
+    threading.Thread(target=telegram_bot, daemon=True).start()
+    threading.Thread(target=check_sdp, daemon=True).start()
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
