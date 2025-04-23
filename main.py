@@ -42,7 +42,7 @@ def send_to_subscribers(message):
 def get_all_requests():
     try:
         headers = {
-            "authtoken": SDP_API_KEY,  # ВАЖНО: строго строчными
+            "authtoken": SDP_API_KEY,
             "Accept": "application/json"
         }
         response = requests.get(SDP_URL, headers=headers, timeout=30)
@@ -142,7 +142,11 @@ def telegram_bot():
     offset = None
     while True:
         try:
-            resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", params={"offset": offset}, timeout=30)
+            resp = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+                params={"offset": offset},
+                timeout=30
+            )
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -181,4 +185,3 @@ if __name__ == "__main__":
     threading.Thread(target=check_sdp, daemon=True).start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
