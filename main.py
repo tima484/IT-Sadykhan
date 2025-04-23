@@ -5,24 +5,16 @@ import threading
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 
-###########################
-#  КОНСТАНТЫ И НАСТРОЙКИ  #
-###########################
-
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SDP_API_KEY = os.getenv("SDP_API_KEY", "").strip()
+SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
 
-SDP_URL = "https://sd.sadykhan.kz/api/v3/requests"
 DEEP_LINK_TEMPLATE = "https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={}&PORTALID=1"
 CHECK_INTERVAL = 60
 
 app = Flask(__name__)
 subscribed_chats = set()
 known_requests = {}
-
-##################################
-#     HELPER: ОТПРАВКА В TELEGRAM
-##################################
 
 def send_telegram_message(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -47,19 +39,15 @@ def send_to_subscribers(message):
     for chat_id in list(subscribed_chats):
         send_telegram_message(chat_id, message)
 
-##################################
-#     ПОЛУЧЕНИЕ ЗАЯВОК ИЗ SDP
-##################################
-
 def get_all_requests():
     try:
-        resp = requests.get(
-            SDP_URL,
-            headers={"Authtoken": SDP_API_KEY, "Accept": "application/json"},
-            timeout=30
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        headers = {
+            "Authtoken": SDP_API_KEY,
+            "Accept": "application/json"
+        }
+        response = requests.get(SDP_URL, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
         return data.get("requests", [])
     except Exception as e:
         print(f"Ошибка при запросе к SDP: {e}")
@@ -88,10 +76,6 @@ def request_to_msg(req_data, prefix="Новая заявка"):
         f"📅 <b>Дата создания:</b> {req_data['created_time']}\n"
         f"🔗 <a href='{build_deep_link(req_data['id'])}'>Открыть заявку</a>"
     )
-
-##########################
-#   ПЕРИОДИЧЕСКАЯ ПРОВЕРКА
-##########################
 
 def check_sdp():
     while True:
@@ -129,10 +113,6 @@ def check_sdp():
 
         time.sleep(CHECK_INTERVAL)
 
-##################################
-#   ЗАЯВКИ ЗА ПОСЛЕДНИЙ ЧАС (/START)
-##################################
-
 def get_requests_last_hour():
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     results = []
@@ -157,10 +137,6 @@ def requests_list_to_text(requests_data):
             f"{parsed['technician']} | {parsed['status']} | {parsed['created_time']}"
         )
     return "\n".join(lines)
-
-############################
-#   TELEGRAM LONG POLLING
-############################
 
 def telegram_bot():
     offset = None
@@ -192,20 +168,4 @@ def telegram_bot():
                 subscribed_chats.discard(chat_id)
                 send_telegram_message(chat_id, "❌ Вы отписаны от уведомлений.")
             else:
-                send_telegram_message(chat_id, "Используйте /start или /stop.")
-
-        time.sleep(2)
-
-############################
-#  FLASK - веб-сервер
-############################
-
-@app.route("/")
-def home():
-    return "Bot is running!"
-
-if __name__ == "__main__":
-    threading.Thread(target=telegram_bot, daemon=True).start()
-    threading.Thread(target=check_sdp, daemon=True).start()
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+                send_telegram_message(chat_id, "Используйте /start_
