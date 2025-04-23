@@ -42,7 +42,7 @@ def send_to_subscribers(message):
 def get_all_requests():
     try:
         headers = {
-            "Authtoken": SDP_API_KEY,
+            "authtoken": SDP_API_KEY,  # ВАЖНО: строго строчными
             "Accept": "application/json"
         }
         response = requests.get(SDP_URL, headers=headers, timeout=30)
@@ -181,3 +181,4 @@ if __name__ == "__main__":
     threading.Thread(target=check_sdp, daemon=True).start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
