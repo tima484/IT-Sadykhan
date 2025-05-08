@@ -45,15 +45,10 @@ def get_all_requests():
             "authtoken": SDP_API_KEY,
             "Accept": "application/json"
         }
-        params = {
-            "start_index": 1,
-            "row_count": 10,
-            "operation": "GetRequest"  # Добавляем параметр, который часто требуется в SDP API
-        }
-        response = requests.get(SDP_URL, headers=headers, params=params, timeout=30)
+        response = requests.get(SDP_URL, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
-        print(f"Успешный ответ от SDP: {data}")  # Логируем успешный ответ для отладки
+        print(f"Успешный ответ от SDP: {data}")
         return data.get("requests", [])
     except Exception as e:
         print(f"Ошибка при запросе к SDP: {e}")
@@ -191,7 +186,6 @@ def home():
     return "Bot is running!"
 
 if __name__ == "__main__":
-    # Проверяем наличие необходимых переменных окружения
     if not BOT_TOKEN or not SDP_API_KEY:
         print("❌ Ошибка: BOT_TOKEN или SDP_API_KEY не установлены.")
         exit(1)
