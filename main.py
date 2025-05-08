@@ -5,9 +5,12 @@ import threading
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 
+# Чтение переменных окружения с отладочным выводом
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SDP_API_KEY = os.getenv("SDP_API_KEY", "").strip()
-SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/sdpapi/request").strip()
+SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
+
+print(f"Загруженные переменные: BOT_TOKEN={BOT_TOKEN}, SDP_API_KEY={SDP_API_KEY}, SDP_URL={SDP_URL}")
 
 DEEP_LINK_TEMPLATE = "https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={}&PORTALID=1"
 CHECK_INTERVAL = 60
@@ -44,19 +47,23 @@ def get_all_requests():
         headers = {
             "authtoken": SDP_API_KEY,
             "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/json"
         }
         if not SDP_API_KEY:
             print("❌ SDP_API_KEY пустой. Проверь переменные окружения.")
             return []
 
-        # Формируем параметры для ServiceDesk Plus API
+        # Передаём input_data в формате JSON, как требует API
         data = {
-            "OPERATION_NAME": "GET_REQUESTS",
-            "TECHNICIAN_KEY": SDP_API_KEY,
-            "INPUT_DATA": '{"list_info":{"row_count":10,"start_index":1,"get_total_count":true}}'
+            "input_data": {
+                "list_info": {
+                    "row_count": 10,
+                    "start_index": 1,
+                    "get_total_count": True
+                }
+            }
         }
-        response = requests.post(SDP_URL, headers=headers, data=data, timeout=30)
+        response = requests.post(SDP_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         data = response.json()
         print(f"Успешный ответ от SDP: {data}")
