@@ -43,9 +43,22 @@ def get_all_requests():
     try:
         headers = {
             "authtoken": SDP_API_KEY,
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Content-Type": "application/json"
         }
-        response = requests.get(SDP_URL, headers=headers, timeout=30)
+        if not SDP_API_KEY:
+            print("❌ SDP_API_KEY пустой. Проверь переменные окружения.")
+            return []
+
+        # Пробуем POST-запрос с параметром input_data
+        data = {
+            "list_info": {
+                "row_count": 10,
+                "start_index": 1,
+                "get_total_count": True
+            }
+        }
+        response = requests.post(SDP_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         data = response.json()
         print(f"Успешный ответ от SDP: {data}")
