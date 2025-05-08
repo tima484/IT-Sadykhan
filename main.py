@@ -1,249 +1,250 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-import os
-import json
-import time
-import threading
 import requests
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timedelta
+import threading
 from flask import Flask
 
-# ==============================
-# Настройки из окружения
-# ==============================
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "").strip()
-SDP_API_KEY = os.getenv("SDP_API_KEY", "").strip()
-SDP_URL     = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
-PORT        = int(os.getenv("PORT", "5000"))
+# Конфигурация Telegram Bot API
+TELEGRAM_TOKEN = "<TELEGRAM_BOT_TOKEN>"  # TODO: вставить токен бота
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/"
 
-if not BOT_TOKEN or not SDP_API_KEY:
-    print("❌ Ошибка: BOT_TOKEN или SDP_API_KEY не установлены.")
-    exit(1)
+# Конфигурация ServiceDesk Plus API
+SDP_API_URL = "https://sd.sadykhan.kz/api/v3/requests"
+SDP_API_KEY = "<TECHNICIAN_API_KEY>"    # TODO: вставить TECHNICIAN_KEY для API SDP
+SDP_HEADERS = {"TECHNICIAN_KEY": SDP_API_KEY, "Content-Type": "application/json"}
 
-DEEP_LINK_TEMPLATE = "https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={}&PORTALID=1"
-CHECK_INTERVAL    = 60   # секунд между запросами к SDP
+# Интервалы опроса
+SDP_POLL_INTERVAL = 60        # интервал опроса API заявок (в секундах)
+TELEGRAM_POLL_INTERVAL = 1    # интервал опроса обновлений Telegram (в секундах)
 
+# Глобальные структуры данных
+known_requests = {}    # словарь известных заявок {id: данные заявки}
+subscribers = set()    # множество подписанных chat_id
+last_update_id = 0     # ID последнего обработанного обновления Telegram
+
+# Инициализация Flask
 app = Flask(__name__)
-subscribed_chats = set()
-known_requests   = {}
 
-# Сессия с ретраями
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+@app.route('/')
+def index():
+    return "ServiceDesk Plus bot is running."
 
-session = requests.Session()
-retries = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
-)
-session.mount("https://", HTTPAdapter(max_retries=retries))
-session.headers.update({
-    "authtoken": SDP_API_KEY,
-    "Accept": "application/json",
-    "Content-Type": "application/json"
-})
-
-# ==============================
-# Вспомогательные функции
-# ==============================
-def send_telegram_message(chat_id: int, text: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        r.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        if r.status_code == 403:
-            subscribed_chats.discard(chat_id)
-            print(f"❌ 403 Forbidden: удаляем чат {chat_id} из подписок")
-        else:
-            print(f"❌ HTTP {r.status_code} при отправке Telegram: {e}")
-    except Exception as ex:
-        print(f"❌ Ошибка при отправке в Telegram: {ex}")
-
-def build_deep_link(req_id: str) -> str:
-    return DEEP_LINK_TEMPLATE.format(req_id)
-
-def parse_request_data(r: dict) -> dict:
-    """Вынимаем из JSON только нужные поля"""
-    return {
-        "id":               r.get("id", "???"),
-        "subject":          r.get("short_description", "Без темы"),
-        "requester":        (r.get("requester")  or {}).get("name", "Неизвестен"),
-        "technician":       (r.get("technician") or {}).get("name", "Не назначен"),
-        "status":           (r.get("status")     or {}).get("name", "N/A"),
-        "created_time":     r.get("created_time", {}).get("display_value", "")
-    }
-
-def request_to_msg(d: dict, prefix="Новая заявка") -> str:
-    return (
-        f"🆕 <b>{prefix} #{d['id']}</b>\n"
-        f"📌 <b>Тема:</b> {d['subject']}\n"
-        f"👤 <b>Автор:</b> {d['requester']}\n"
-        f"🔧 <b>Назначено:</b> {d['technician']}\n"
-        f"⚙️ <b>Статус:</b> {d['status']}\n"
-        f"📅 <b>Создана:</b> {d['created_time']}\n"
-        f"🔗 <a href='{build_deep_link(d['id'])}'>Открыть заявку</a>"
-    )
-
-# ==============================
-# Основная логика работы с SDP
-# ==============================
-def get_all_requests(row_count=10) -> list:
-    """Получаем все заявки, проходя по страницам."""
-    all_reqs = []
-    start = 1
-
-    while True:
-        payload = {
-            "input_data": {
-                "list_info": {
-                    "row_count":      row_count,
-                    "start_index":    start,
-                    "get_total_count": True
-                }
-            }
+def fetch_requests():
+    """Запрос списка заявок из ServiceDesk Plus через API."""
+    input_data = {
+        "list_info": {
+            "row_count": 100,
+            "sort_field": "created_time",
+            "sort_order": "desc"
+            # При необходимости можно добавить фильтр по статусу:
+            # "search_criteria": {
+            #     "field": "status.name",
+            #     "condition": "not equal",
+            #     "value": "Закрыто"
+            # }
         }
-        print(f"→ SDP payload: start={start}, rows={row_count}")
-        print(json.dumps(payload, ensure_ascii=False))
-        resp = session.post(SDP_URL, json=payload, timeout=(5, 30))
-        print(f"← HTTP {resp.status_code}, body: {resp.text}")
-
-        resp.raise_for_status()
+    }
+    try:
+        resp = requests.post(SDP_API_URL, headers=SDP_HEADERS, json=input_data, timeout=10)
         data = resp.json()
+        return data.get("requests", [])
+    except Exception as e:
+        print(f"Error fetching requests: {e}")
+        return []
 
-        # Проверяем статус выполнения
-        status_obj = data.get("response_status", [{}])[0]
-        if status_obj.get("status") != "success":
-            print("❌ SDP вернул ошибку:", status_obj)
-            break
+def format_request_message(req, is_new=True):
+    """Форматирование данных заявки в текст уведомления."""
+    subject = req.get("subject", "Без темы")
+    requester_name = req.get("requester", {}).get("name", "Неизвестно")
+    # Проверяем наличие назначенного техника
+    technician = req.get("technician")
+    tech_name = technician.get("name") if technician else None
+    tech_name = tech_name if tech_name else "Не назначен"
+    status_name = req.get("status", {}).get("name", "Неизвестен")
+    created_time = req.get("created_time", {}).get("display_value", "")
+    request_id = req.get("id", "")
+    # Формируем ссылку на заявку по ID (формат WorkOrder.do)
+    request_link = f"https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={request_id}"
+    header = "🆕 Новая заявка" if is_new else "ℹ️ Обновление заявки"
+    message = (f"{header}\n"
+               f"📌 Тема: {subject}\n"
+               f"👤 Автор: {requester_name}\n"
+               f"🔧 Назначено: {tech_name}\n"
+               f"⚙️ Статус: {status_name}\n"
+               f"📅 Дата создания: {created_time}\n"
+               f"🔗 Открыть заявку: [Ссылка]({request_link})")
+    return message
 
-        page = data.get("requests", [])
-        all_reqs.extend(page)
+def send_message(chat_id, text):
+    """Отправка сообщения в чат Telegram."""
+    try:
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        requests.get(TELEGRAM_API_URL + "sendMessage", params=payload, timeout=5)
+    except Exception as e:
+        print(f"Error sending message to {chat_id}: {e}")
 
-        info = data.get("list_info", {})
-        if not info.get("has_more_rows"):
-            break
+def handle_sutki_command(chat_id):
+    """Обработка команды /sutki: отправка списка заявок за последние 24 часа."""
+    now = datetime.now()
+    since_time = now - timedelta(days=1)
+    results = []
+    for req_id, info in known_requests.items():
+        created_val = info.get("created_time_value")
+        if created_val:
+            created_dt = datetime.fromtimestamp(created_val/1000.0)
+            if created_dt >= since_time:
+                subj = info.get("subject", "")
+                status = info.get("status", {}).get("name", "")
+                created_disp = info.get("created_time", {}).get("display_value", "")
+                results.append(f"{req_id} – {subj} – Статус: {status} – Создана: {created_disp}")
+    if results:
+        message = "📝 Заявки за последние 24 часа:\n" + "\n".join(results)
+    else:
+        message = "📭 За последние 24 часа заявок нет."
+    send_message(chat_id, message)
 
-        start += row_count
-
-    print(f"✓ Всего заявок получено: {len(all_reqs)}")
-    return all_reqs
-
-# ==============================
-# Цикл мониторинга и рассылки
-# ==============================
-def check_sdp():
-    while True:
-        try:
-            all_reqs = get_all_requests()
-            for r in all_reqs:
-                cur = parse_request_data(r)
-                rid = cur["id"]
-
-                if rid not in known_requests:
-                    known_requests[rid] = cur
-                    send_to_subscribers(request_to_msg(cur, prefix="Новая заявка"))
-                else:
-                    old = known_requests[rid]
-                    diffs = []
-
-                    for field in ("subject","requester","technician","status","created_time"):
-                        if old[field] != cur[field]:
-                            diffs.append(f"{field}: {old[field]} → {cur[field]}")
-
-                    if diffs:
-                        msg = "✏️ <b>Изменения в заявке #"+rid+"</b>\n" + "\n".join(diffs)
-                        msg += f"\n🔗 <a href='{build_deep_link(rid)}'>Открыть заявку</a>"
-                        send_to_subscribers(msg)
-                        known_requests[rid] = cur
-
-        except Exception as e:
-            print("❌ Ошибка в check_sdp:", e)
-
-        time.sleep(CHECK_INTERVAL)
-
-def send_to_subscribers(text: str):
-    for cid in list(subscribed_chats):
-        send_telegram_message(cid, text)
-
-# ==============================
-# Telegram-бот (getUpdates)
-# ==============================
-def get_requests_last_hour():
-    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-    recent = []
-    for r in get_all_requests():
-        ts = r.get("created_time", {}).get("display_value","")
-        try:
-            dt = datetime.strptime(ts, "%d/%m/%Y %I:%M %p").replace(tzinfo=timezone.utc)
-        except:
+def bot_loop():
+    """Основной цикл бота: опрос API SDP и Telegram, обработка событий."""
+    global last_update_id
+    # Начальная загрузка списка заявок
+    initial_list = fetch_requests()
+    for req in initial_list:
+        rid = req.get("id")
+        if not rid:
             continue
-        if dt >= one_hour_ago:
-            recent.append(r)
-    return recent
-
-def requests_list_to_text(lst: list) -> str:
-    if not lst:
-        return "За последний час заявок не найдено."
-    lines = []
-    for r in lst:
-        p = parse_request_data(r)
-        lines.append(f"🔹 #{p['id']} | {p['subject']} | {p['requester']} | {p['technician']} | {p['status']} | {p['created_time']}")
-    return "\n".join(lines)
-
-def telegram_bot():
-    offset = None
+        # Сохраняем ключевые поля заявки
+        created_val = None
+        if req.get("created_time") and req["created_time"].get("value"):
+            try:
+                created_val = int(req["created_time"]["value"])
+            except:
+                created_val = None
+        known_requests[rid] = {
+            "id": rid,
+            "subject": req.get("subject"),
+            "requester": req.get("requester", {}),
+            "technician": req.get("technician"),
+            "status": req.get("status", {}),
+            "created_time": req.get("created_time", {}),
+            "created_time_value": created_val
+        }
+    print(f"Loaded {len(known_requests)} initial requests.")
+    last_sdp_poll = time.time()
+    # Бесконечный цикл
     while True:
+        # 1. Опрос обновлений Telegram
         try:
-            resp = requests.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
-                params={"offset": offset}, timeout=30
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            params = {"timeout": 1}
+            if last_update_id:
+                params["offset"] = last_update_id + 1
+            resp = requests.get(TELEGRAM_API_URL + "getUpdates", params=params, timeout=5)
+            updates = resp.json().get("result", [])
+            for update in updates:
+                if 'message' in update:
+                    msg = update['message']
+                    chat_id = msg['chat']['id']
+                    text = msg.get('text', "").strip() if msg.get('text') else ""
+                    if not text:
+                        continue
+                    if text == "/start":
+                        subscribers.add(chat_id)
+                        send_message(chat_id, "✅ Вы подписались на уведомления о новых заявках.")
+                    elif text == "/stop":
+                        subscribers.discard(chat_id)
+                        send_message(chat_id, "❎ Вы отписались от уведомлений.")
+                    elif text == "/sutki":
+                        handle_sutki_command(chat_id)
+                    else:
+                        send_message(chat_id, "ℹ️ Доступные команды: /start, /stop, /sutki")
+            if updates:
+                last_update_id = updates[-1]['update_id']
         except Exception as e:
-            print("⚠️ Ошибка getUpdates:", e)
-            time.sleep(5)
-            continue
-
-        for upd in data.get("result", []):
-            offset = upd["update_id"] + 1
-            msg = upd.get("message", {})
-            cid = msg.get("chat", {}).get("id")
-            txt = msg.get("text", "").strip().lower()
-
-            if not cid or not txt:
+            print(f"Telegram polling error: {e}")
+        # 2. Опрос API ServiceDesk Plus по таймеру
+        if time.time() - last_sdp_poll >= SDP_POLL_INTERVAL:
+            last_sdp_poll = time.time()
+            current_list = fetch_requests()
+            if not current_list:
                 continue
+            current_map = {req.get("id"): req for req in current_list if req.get("id")}
+            for rid, req in current_map.items():
+                if rid not in known_requests:
+                    # Обнаружена новая заявка
+                    created_val = None
+                    if req.get("created_time") and req["created_time"].get("value"):
+                        try:
+                            created_val = int(req["created_time"]["value"])
+                        except:
+                            created_val = None
+                    known_requests[rid] = {
+                        "id": rid,
+                        "subject": req.get("subject"),
+                        "requester": req.get("requester", {}),
+                        "technician": req.get("technician"),
+                        "status": req.get("status", {}),
+                        "created_time": req.get("created_time", {}),
+                        "created_time_value": created_val
+                    }
+                    # Отправляем уведомление о новой заявке всем подписчикам
+                    message = format_request_message(req, is_new=True)
+                    for chat_id in subscribers:
+                        send_message(chat_id, message)
+                else:
+                    # Проверка изменений в известной заявке
+                    known = known_requests[rid]
+                    old_status = known.get("status", {}).get("name")
+                    new_status = req.get("status", {}).get("name")
+                    old_tech = known.get("technician", {}).get("name") if known.get("technician") else None
+                    new_tech = req.get("technician", {}).get("name") if req.get("technician") else None
+                    status_changed = (old_status != new_status)
+                    tech_changed = (old_tech != new_tech)
+                    if status_changed or tech_changed:
+                        # Обновляем сохранённые данные заявки
+                        known_requests[rid]["status"] = req.get("status", {})
+                        known_requests[rid]["technician"] = req.get("technician")
+                        diff_lines = []
+                        # Изменение статуса
+                        if status_changed:
+                            diff_lines.append(f"Статус: {old_status} ➡️ {new_status}")
+                            if new_status and new_status.lower().startswith("закры"):
+                                # Если заявка закрыта, вычисляем время до закрытия
+                                created_val = known_requests[rid].get("created_time_value")
+                                if created_val:
+                                    created_dt = datetime.fromtimestamp(created_val/1000.0)
+                                    closed_dt = datetime.now()
+                                    delta = closed_dt - created_dt
+                                    hours = delta.days * 24 + delta.seconds // 3600
+                                    minutes = (delta.seconds % 3600) // 60
+                                    diff_lines.append(f"⏱️ Время до закрытия: {hours} ч {minutes} мин")
+                        # Изменение назначения техника
+                        if tech_changed:
+                            old_name = old_tech if old_tech else "не назначен"
+                            new_name = new_tech if new_tech else "не назначен"
+                            diff_lines.append(f"Техник: {old_name} ➡️ {new_name}")
+                            if old_tech is None and new_tech is not None:
+                                # Если техник только что назначен – время реакции
+                                created_val = known_requests[rid].get("created_time_value")
+                                if created_val:
+                                    created_dt = datetime.fromtimestamp(created_val/1000.0)
+                                    assign_dt = datetime.now()
+                                    delta = assign_dt - created_dt
+                                    hours = delta.days * 24 + delta.seconds // 3600
+                                    minutes = (delta.seconds % 3600) // 60
+                                    diff_lines.append(f"⏱️ Время реакции: {hours} ч {minutes} мин")
+                        # Отправляем уведомление об изменении заявки
+                        diff_text = "\n".join(diff_lines)
+                        update_message = (f"⚠️ Обновление заявки #{rid}\n"
+                                          f"📌 Тема: {req.get('subject')}\n"
+                                          f"{diff_text}\n"
+                                          f"🔗 Открыть заявку: [Ссылка](https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={rid})")
+                        for chat_id in subscribers:
+                            send_message(chat_id, update_message)
+        # Небольшая задержка цикла
+        time.sleep(TELEGRAM_POLL_INTERVAL)
 
-            if txt in ("/start", "start"):
-                subscribed_chats.add(cid)
-                send_telegram_message(cid, "✅ Подписка на заявки активирована.")
-                recent = get_requests_last_hour()
-                send_telegram_message(cid, "Заявки за последний час:\n" + requests_list_to_text(recent))
-
-            elif txt in ("/stop", "stop"):
-                subscribed_chats.discard(cid)
-                send_telegram_message(cid, "❌ Вы отписаны от уведомлений.")
-
-            else:
-                send_telegram_message(cid, "Команда не распознана. Используйте /start или /stop.")
-
-        time.sleep(2)
-
-# ==============================
-# Запуск Flask и фоновых потоков
-# ==============================
-@app.route("/")
-def home():
-    return "Bot is running!"
+# Запуск фонового потока бота
+bot_thread = threading.Thread(target=bot_loop, daemon=True)
+bot_thread.start()
 
 if __name__ == "__main__":
-    # Запускаем потоки
-    threading.Thread(target=telegram_bot, daemon=True).start()
-    threading.Thread(target=check_sdp, daemon=True).start()
-    print(f"🚀 Starting Flask on port {PORT}")
-    app.run(host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=8080)
