@@ -45,12 +45,20 @@ def get_all_requests():
             "authtoken": SDP_API_KEY,
             "Accept": "application/json"
         }
-        response = requests.get(SDP_URL, headers=headers, timeout=30)
+        params = {
+            "start_index": 1,
+            "row_count": 10,
+            "operation": "GetRequest"  # Добавляем параметр, который часто требуется в SDP API
+        }
+        response = requests.get(SDP_URL, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
+        print(f"Успешный ответ от SDP: {data}")  # Логируем успешный ответ для отладки
         return data.get("requests", [])
     except Exception as e:
         print(f"Ошибка при запросе к SDP: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Ответ сервера: {e.response.text}")
         return []
 
 def parse_request_data(r):
@@ -80,6 +88,8 @@ def request_to_msg(req_data, prefix="Новая заявка"):
 def check_sdp():
     while True:
         all_reqs = get_all_requests()
+        if not all_reqs:
+            print("Нет новых заявок или ошибка при получении данных.")
         for r in all_reqs:
             current = parse_request_data(r)
             rid = current["id"]
@@ -181,6 +191,11 @@ def home():
     return "Bot is running!"
 
 if __name__ == "__main__":
+    # Проверяем наличие необходимых переменных окружения
+    if not BOT_TOKEN or not SDP_API_KEY:
+        print("❌ Ошибка: BOT_TOKEN или SDP_API_KEY не установлены.")
+        exit(1)
+
     threading.Thread(target=telegram_bot, daemon=True).start()
     threading.Thread(target=check_sdp, daemon=True).start()
     port = int(os.getenv("PORT", 5000))
