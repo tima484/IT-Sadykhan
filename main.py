@@ -1,164 +1,198 @@
-import requests
-import time
+#!/usr/bin/env python3
+# coding: utf-8
+
 import os
+import json
+import time
 import threading
-from datetime import datetime, timedelta, timezone
+import requests
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 
-# Чтение переменных окружения с отладочным выводом
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+# ==============================
+# Настройки из окружения
+# ==============================
+BOT_TOKEN   = os.getenv("BOT_TOKEN", "").strip()
 SDP_API_KEY = os.getenv("SDP_API_KEY", "").strip()
-SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
+SDP_URL     = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
+PORT        = int(os.getenv("PORT", "5000"))
 
-print(f"Загруженные переменные: BOT_TOKEN={BOT_TOKEN}, SDP_API_KEY={SDP_API_KEY}, SDP_URL={SDP_URL}")
+if not BOT_TOKEN or not SDP_API_KEY:
+    print("❌ Ошибка: BOT_TOKEN или SDP_API_KEY не установлены.")
+    exit(1)
 
 DEEP_LINK_TEMPLATE = "https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={}&PORTALID=1"
-CHECK_INTERVAL = 60
+CHECK_INTERVAL    = 60   # секунд между запросами к SDP
 
 app = Flask(__name__)
 subscribed_chats = set()
-known_requests = {}
+known_requests   = {}
 
-def send_telegram_message(chat_id, text):
+# Сессия с ретраями
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+session = requests.Session()
+retries = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"]
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+session.headers.update({
+    "authtoken": SDP_API_KEY,
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+})
+
+# ==============================
+# Вспомогательные функции
+# ==============================
+def send_telegram_message(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
         if r.status_code == 403:
             subscribed_chats.discard(chat_id)
-            print(f"❌ 403 FORBIDDEN. Удаляем {chat_id} из подписок.")
+            print(f"❌ 403 Forbidden: удаляем чат {chat_id} из подписок")
         else:
-            print(f"❌ Ошибка {r.status_code} при отправке: {e}")
+            print(f"❌ HTTP {r.status_code} при отправке Telegram: {e}")
     except Exception as ex:
-        print(f"❌ Ошибка при отправке: {ex}")
+        print(f"❌ Ошибка при отправке в Telegram: {ex}")
 
-def send_to_subscribers(message):
-    for chat_id in list(subscribed_chats):
-        send_telegram_message(chat_id, message)
+def build_deep_link(req_id: str) -> str:
+    return DEEP_LINK_TEMPLATE.format(req_id)
 
-def get_all_requests():
-    try:
-        headers = {
-            "authtoken": SDP_API_KEY,
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        if not SDP_API_KEY:
-            print("❌ SDP_API_KEY пустой. Проверь переменные окружения.")
-            return []
+def parse_request_data(r: dict) -> dict:
+    """Вынимаем из JSON только нужные поля"""
+    return {
+        "id":               r.get("id", "???"),
+        "subject":          r.get("short_description", "Без темы"),
+        "requester":        (r.get("requester")  or {}).get("name", "Неизвестен"),
+        "technician":       (r.get("technician") or {}).get("name", "Не назначен"),
+        "status":           (r.get("status")     or {}).get("name", "N/A"),
+        "created_time":     r.get("created_time", {}).get("display_value", "")
+    }
 
-        # Передаём input_data в формате JSON, как требует API
-        data = {
+def request_to_msg(d: dict, prefix="Новая заявка") -> str:
+    return (
+        f"🆕 <b>{prefix} #{d['id']}</b>\n"
+        f"📌 <b>Тема:</b> {d['subject']}\n"
+        f"👤 <b>Автор:</b> {d['requester']}\n"
+        f"🔧 <b>Назначено:</b> {d['technician']}\n"
+        f"⚙️ <b>Статус:</b> {d['status']}\n"
+        f"📅 <b>Создана:</b> {d['created_time']}\n"
+        f"🔗 <a href='{build_deep_link(d['id'])}'>Открыть заявку</a>"
+    )
+
+# ==============================
+# Основная логика работы с SDP
+# ==============================
+def get_all_requests(row_count=10) -> list:
+    """Получаем все заявки, проходя по страницам."""
+    all_reqs = []
+    start = 1
+
+    while True:
+        payload = {
             "input_data": {
                 "list_info": {
-                    "row_count": 10,
-                    "start_index": 1,
+                    "row_count":      row_count,
+                    "start_index":    start,
                     "get_total_count": True
                 }
             }
         }
-        response = requests.post(SDP_URL, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        print(f"Успешный ответ от SDP: {data}")
-        return data.get("requests", [])
-    except Exception as e:
-        print(f"Ошибка при запросе к SDP: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"Ответ сервера: {e.response.text}")
-        return []
+        print(f"→ SDP payload: start={start}, rows={row_count}")
+        print(json.dumps(payload, ensure_ascii=False))
+        resp = session.post(SDP_URL, json=payload, timeout=(5, 30))
+        print(f"← HTTP {resp.status_code}, body: {resp.text}")
 
-def parse_request_data(r):
-    return {
-        "id": str(r.get("id", "???")),
-        "subject": r.get("subject") or "Без темы",
-        "requester": (r.get("requester") or {}).get("name", "Неизвестный автор"),
-        "technician": (r.get("technician") or {}).get("name", "Не назначен"),
-        "status": (r.get("status") or {}).get("name", "N/A"),
-        "created_time": r.get("created_time", {}).get("display_value", "")
-    }
+        resp.raise_for_status()
+        data = resp.json()
 
-def build_deep_link(req_id):
-    return DEEP_LINK_TEMPLATE.format(req_id)
+        # Проверяем статус выполнения
+        status_obj = data.get("response_status", [{}])[0]
+        if status_obj.get("status") != "success":
+            print("❌ SDP вернул ошибку:", status_obj)
+            break
 
-def request_to_msg(req_data, prefix="Новая заявка"):
-    return (
-        f"🆕 <b>{prefix} #{req_data['id']}</b>\n"
-        f"📌 <b>Тема:</b> {req_data['subject']}\n"
-        f"👤 <b>Автор:</b> {req_data['requester']}\n"
-        f"🔧 <b>Назначено:</b> {req_data['technician']}\n"
-        f"⚙️ <b>Статус:</b> {req_data['status']}\n"
-        f"📅 <b>Дата создания:</b> {req_data['created_time']}\n"
-        f"🔗 <a href='{build_deep_link(req_data['id'])}'>Открыть заявку</a>"
-    )
+        page = data.get("requests", [])
+        all_reqs.extend(page)
 
+        info = data.get("list_info", {})
+        if not info.get("has_more_rows"):
+            break
+
+        start += row_count
+
+    print(f"✓ Всего заявок получено: {len(all_reqs)}")
+    return all_reqs
+
+# ==============================
+# Цикл мониторинга и рассылки
+# ==============================
 def check_sdp():
     while True:
-        all_reqs = get_all_requests()
-        if not all_reqs:
-            print("Нет новых заявок или ошибка при получении данных.")
-        for r in all_reqs:
-            current = parse_request_data(r)
-            rid = current["id"]
+        try:
+            all_reqs = get_all_requests()
+            for r in all_reqs:
+                cur = parse_request_data(r)
+                rid = cur["id"]
 
-            if rid not in known_requests:
-                known_requests[rid] = current
-                send_to_subscribers(request_to_msg(current, prefix="Новая заявка"))
-            else:
-                old = known_requests[rid]
-                changes = []
+                if rid not in known_requests:
+                    known_requests[rid] = cur
+                    send_to_subscribers(request_to_msg(cur, prefix="Новая заявка"))
+                else:
+                    old = known_requests[rid]
+                    diffs = []
 
-                if old["subject"] != current["subject"]:
-                    changes.append(f"Тема: {old['subject']} → {current['subject']}")
-                if old["requester"] != current["requester"]:
-                    changes.append(f"Автор: {old['requester']} → {current['requester']}")
-                if old["technician"] != current["technician"]:
-                    changes.append(f"Назначено: {old['technician']} → {current['technician']}")
-                if old["status"] != current["status"]:
-                    changes.append(f"Статус: {old['status']} → {current['status']}")
-                if old["created_time"] != current["created_time"]:
-                    changes.append(f"Дата создания: {old['created_time']} → {current['created_time']}")
+                    for field in ("subject","requester","technician","status","created_time"):
+                        if old[field] != cur[field]:
+                            diffs.append(f"{field}: {old[field]} → {cur[field]}")
 
-                if changes:
-                    msg = (
-                        f"✏️ <b>Изменения по заявке #{rid}</b>\n" +
-                        "\n".join(changes) +
-                        f"\n🔗 <a href='{build_deep_link(rid)}'>Открыть заявку</a>"
-                    )
-                    send_to_subscribers(msg)
-                    known_requests[rid] = current
+                    if diffs:
+                        msg = "✏️ <b>Изменения в заявке #"+rid+"</b>\n" + "\n".join(diffs)
+                        msg += f"\n🔗 <a href='{build_deep_link(rid)}'>Открыть заявку</a>"
+                        send_to_subscribers(msg)
+                        known_requests[rid] = cur
+
+        except Exception as e:
+            print("❌ Ошибка в check_sdp:", e)
 
         time.sleep(CHECK_INTERVAL)
 
+def send_to_subscribers(text: str):
+    for cid in list(subscribed_chats):
+        send_telegram_message(cid, text)
+
+# ==============================
+# Telegram-бот (getUpdates)
+# ==============================
 def get_requests_last_hour():
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-    results = []
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent = []
     for r in get_all_requests():
-        ctime_str = r.get("created_time", {}).get("display_value", "")
+        ts = r.get("created_time", {}).get("display_value","")
         try:
-            dt = datetime.strptime(ctime_str, "%d/%m/%Y %I:%M %p").replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(ts, "%d/%m/%Y %I:%M %p").replace(tzinfo=timezone.utc)
         except:
             continue
-        if dt >= cutoff:
-            results.append(r)
-    return results
+        if dt >= one_hour_ago:
+            recent.append(r)
+    return recent
 
-def requests_list_to_text(requests_data):
-    if not requests_data:
+def requests_list_to_text(lst: list) -> str:
+    if not lst:
         return "За последний час заявок не найдено."
     lines = []
-    for r in requests_data:
-        parsed = parse_request_data(r)
-        lines.append(
-            f"🔹 #{parsed['id']} | {parsed['subject']} | {parsed['requester']} | "
-            f"{parsed['technician']} | {parsed['status']} | {parsed['created_time']}"
-        )
+    for r in lst:
+        p = parse_request_data(r)
+        lines.append(f"🔹 #{p['id']} | {p['subject']} | {p['requester']} | {p['technician']} | {p['status']} | {p['created_time']}")
     return "\n".join(lines)
 
 def telegram_bot():
@@ -167,48 +201,49 @@ def telegram_bot():
         try:
             resp = requests.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
-                params={"offset": offset},
-                timeout=30
+                params={"offset": offset}, timeout=30
             )
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            print(f"Ошибка getUpdates: {e}")
+            print("⚠️ Ошибка getUpdates:", e)
             time.sleep(5)
             continue
 
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
             msg = upd.get("message", {})
-            chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text", "").strip().lower()
+            cid = msg.get("chat", {}).get("id")
+            txt = msg.get("text", "").strip().lower()
 
-            if not chat_id or not text:
+            if not cid or not txt:
                 continue
 
-            if text in ("/start", "start"):
-                subscribed_chats.add(chat_id)
-                send_telegram_message(chat_id, "✅ Вы подписаны на уведомления по заявкам.")
-                last_hour = get_requests_last_hour()
-                send_telegram_message(chat_id, "Заявки за последний час:\n" + requests_list_to_text(last_hour))
-            elif text in ("/stop", "stop"):
-                subscribed_chats.discard(chat_id)
-                send_telegram_message(chat_id, "❌ Вы отписаны от уведомлений.")
+            if txt in ("/start", "start"):
+                subscribed_chats.add(cid)
+                send_telegram_message(cid, "✅ Подписка на заявки активирована.")
+                recent = get_requests_last_hour()
+                send_telegram_message(cid, "Заявки за последний час:\n" + requests_list_to_text(recent))
+
+            elif txt in ("/stop", "stop"):
+                subscribed_chats.discard(cid)
+                send_telegram_message(cid, "❌ Вы отписаны от уведомлений.")
+
             else:
-                send_telegram_message(chat_id, "Используйте /start или /stop.")
+                send_telegram_message(cid, "Команда не распознана. Используйте /start или /stop.")
 
         time.sleep(2)
 
+# ==============================
+# Запуск Flask и фоновых потоков
+# ==============================
 @app.route("/")
 def home():
     return "Bot is running!"
 
 if __name__ == "__main__":
-    if not BOT_TOKEN or not SDP_API_KEY:
-        print("❌ Ошибка: BOT_TOKEN или SDP_API_KEY не установлены.")
-        exit(1)
-
+    # Запускаем потоки
     threading.Thread(target=telegram_bot, daemon=True).start()
     threading.Thread(target=check_sdp, daemon=True).start()
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    print(f"🚀 Starting Flask on port {PORT}")
+    app.run(host="0.0.0.0", port=PORT)
