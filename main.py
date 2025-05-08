@@ -7,7 +7,7 @@ from flask import Flask
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SDP_API_KEY = os.getenv("SDP_API_KEY", "").strip()
-SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
+SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/sdpapi/request").strip()
 
 DEEP_LINK_TEMPLATE = "https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={}&PORTALID=1"
 CHECK_INTERVAL = 60
@@ -44,21 +44,19 @@ def get_all_requests():
         headers = {
             "authtoken": SDP_API_KEY,
             "Accept": "application/json",
-            "Content-Type": "application/json"
+            "Content-Type": "application/x-www-form-urlencoded"
         }
         if not SDP_API_KEY:
             print("❌ SDP_API_KEY пустой. Проверь переменные окружения.")
             return []
 
-        # Пробуем POST-запрос с параметром input_data
+        # Формируем параметры для ServiceDesk Plus API
         data = {
-            "list_info": {
-                "row_count": 10,
-                "start_index": 1,
-                "get_total_count": True
-            }
+            "OPERATION_NAME": "GET_REQUESTS",
+            "TECHNICIAN_KEY": SDP_API_KEY,
+            "INPUT_DATA": '{"list_info":{"row_count":10,"start_index":1,"get_total_count":true}}'
         }
-        response = requests.post(SDP_URL, headers=headers, json=data, timeout=30)
+        response = requests.post(SDP_URL, headers=headers, data=data, timeout=30)
         response.raise_for_status()
         data = response.json()
         print(f"Успешный ответ от SDP: {data}")
