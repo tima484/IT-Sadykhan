@@ -77,8 +77,8 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
-        # Передаём input_data как строку JSON напрямую
-        payload = json.dumps(input_data)
+        # Формируем тело запроса с ключом input_data
+        payload = {'input_data': json.dumps(input_data, ensure_ascii=False)}
         headers = {
             'authtoken': SDP_TOKEN,
             'Content-Type': 'application/x-www-form-urlencoded'
