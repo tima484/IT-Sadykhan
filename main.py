@@ -10,20 +10,20 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # === Конфигурация ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SDP_TOKEN = os.getenv("SDP_API_KEY")  # Соответствует переменной в Railway
-SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests")  # Значение по умолчанию
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+SDP_TOKEN = os.getenv("SDP_API_KEY", "").strip()  # Очистка пробелов
+SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
 
 # Проверка токенов
 if not BOT_TOKEN or ':' not in BOT_TOKEN:
     logging.error("Invalid BOT_TOKEN. Please check your environment variables in Railway.")
     raise ValueError("Invalid BOT_TOKEN. It must contain a colon and be set in Railway variables.")
 if not SDP_TOKEN:
-    logging.error("SDP_API_KEY not found in environment variables.")
-    raise ValueError("SDP_API_KEY not found in environment variables.")
+    logging.error("SDP_API_KEY not found or empty in environment variables.")
+    raise ValueError("SDP_API_KEY not found or empty in environment variables.")
 
 logging.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}...")  # Частичный вывод для отладки
-logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")
+logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")  # Логирование для проверки
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
 
@@ -65,7 +65,8 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
-        headers = {'authtoken': SDP_TOKEN}
+        headers = {'authtoken': SDP_TOKEN}  # Используем очищенный SDP_TOKEN
+        logging.debug(f"Sending request with headers: {headers}")  # Логирование для отладки
         response = requests.post(SDP_URL, headers=headers, json=input_data, timeout=10)
         response.raise_for_status()
         data = response.json()
