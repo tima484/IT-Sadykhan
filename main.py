@@ -1,6 +1,7 @@
 import os
 import telebot
 import requests
+import json
 from flask import Flask, request as flask_request
 import threading
 import time
@@ -13,13 +14,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SDP_TOKEN = os.getenv("SDP_API_KEY", "").strip()
 SDP_URL = os.getenv("SDP_URL", "https://sd.sadykhan.kz/api/v3/requests").strip()
-# Получаем домен от Railway (или используем ngrok для локального тестирования)
+
+# Попытка получить публичный домен от Railway
 BASE_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-if BASE_URL:
-    WEBHOOK_URL = f"https://{BASE_URL}/bot{BOT_TOKEN}"
+if not BASE_URL:
+    logging.warning("RAILWAY_PUBLIC_DOMAIN not set. Falling back to polling mode.")
+    USE_WEBHOOK = False
 else:
-    logging.error("RAILWAY_PUBLIC_DOMAIN not set. Webhook cannot be configured.")
-    raise ValueError("RAILWAY_PUBLIC_DOMAIN must be set for webhooks.")
+    WEBHOOK_URL = f"https://{BASE_URL}/bot{BOT_TOKEN}"
+    USE_WEBHOOK = True
+    logging.info(f"Webhook URL: {WEBHOOK_URL}")
 
 # Проверка токенов
 if not BOT_TOKEN or ':' not in BOT_TOKEN:
@@ -31,7 +35,6 @@ if not SDP_TOKEN:
 
 logging.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}...")
 logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")
-logging.info(f"Webhook URL: {WEBHOOK_URL}")
 
 # Инициализация бота
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
@@ -74,12 +77,12 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
-        # Оборачиваем list_info в input_data, как ожидает SDP API
-        payload = {"input_data": input_data}
-        headers = {'technician_key': SDP_TOKEN}
+        # SDP API ожидает input_data как строку JSON, а не объект
+        payload = {"input_data": json.dumps(input_data)}
+        headers = {'authtoken': SDP_TOKEN}  # Пробуем authtoken вместо technician_key
         logging.debug(f"Sending request to SDP API with headers: {headers}")
         logging.debug(f"Request body: {payload}")
-        response = requests.post(SDP_URL, headers=headers, json=payload, timeout=10)
+        response = requests.post(SDP_URL, headers=headers, data=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         logging.debug(f"SDP API response: {data}")
@@ -354,7 +357,7 @@ app = Flask(__name__)
 def index():
     return "ServiceDesk Plus Telegram Bot is running.", 200
 
-# Эндпоинт для обработки вебхуков от Telegram
+# Эндпоинт для обработки вебхуков от Telegram (если используется)
 @app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
 def webhook():
     if flask_request.headers.get('content-type') == 'application/json':
@@ -365,20 +368,8 @@ def webhook():
     else:
         return '', 403
 
-# --- Запуск потоков и настройка вебхуков ---
+# --- Запуск потоков и настройка ---
 if __name__ == "__main__":
-    # Удаляем существующий вебхук (на случай, если он был установлен ранее)
-    bot.remove_webhook()
-    time.sleep(1)  # Даём время на удаление
-
-    # Устанавливаем новый вебхук
-    webhook_response = bot.set_webhook(url=WEBHOOK_URL)
-    if webhook_response:
-        logging.info(f"Webhook set successfully: {WEBHOOK_URL}")
-    else:
-        logging.error("Failed to set webhook.")
-        raise ValueError("Failed to set webhook. Check the WEBHOOK_URL and network accessibility.")
-
     # Загружаем начальные заявки
     load_initial_requests()
 
@@ -387,6 +378,25 @@ if __name__ == "__main__":
     sdp_thread.daemon = True
     sdp_thread.start()
 
-    # Запускаем Flask для обработки вебхуков
+    # Выбор режима работы
+    if USE_WEBHOOK:
+        # Удаляем существующий вебхук (на случай, если он был установлен ранее)
+        bot.remove_webhook()
+        time.sleep(1)  # Даём время на удаление
+
+        # Устанавливаем новый вебхук
+        webhook_response = bot.set_webhook(url=WEBHOOK_URL)
+        if webhook_response:
+            logging.info(f"Webhook set successfully: {WEBHOOK_URL}")
+        else:
+            logging.error("Failed to set webhook.")
+            raise ValueError("Failed to set webhook. Check the WEBHOOK_URL and network accessibility.")
+    else:
+        logging.warning("Running in polling mode due to missing RAILWAY_PUBLIC_DOMAIN.")
+        bot_thread = threading.Thread(target=lambda: bot.polling(none_stop=True, timeout=60))
+        bot_thread.daemon = True
+        bot_thread.start()
+
+    # Запускаем Flask
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
