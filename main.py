@@ -22,10 +22,19 @@ if not SDP_TOKEN:
     logging.error("SDP_API_KEY not found or empty in environment variables.")
     raise ValueError("SDP_API_KEY not found or empty in environment variables.")
 
-logging.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}...")  # Частичный вывод для отладки
-logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")  # Логирование для проверки
+logging.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}...")
+logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")
 
+# Инициализация бота
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
+
+# Попытка проверить, не запущен ли другой экземпляр
+try:
+    bot.get_me()  # Проверка, может ли бот подключиться
+    logging.info("Bot successfully connected to Telegram API.")
+except Exception as e:
+    logging.error(f"Failed to connect to Telegram API: {e}")
+    raise SystemExit("Exiting due to Telegram API connection failure. Check for duplicate bot instances.")
 
 # Множество подписчиков (chat_id пользователей)
 subscribers = set()
@@ -65,14 +74,19 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
-        headers = {'authtoken': SDP_TOKEN}  # Используем очищенный SDP_TOKEN
-        logging.debug(f"Sending request with headers: {headers}")  # Логирование для отладки
+        # Попробуем разные форматы заголовка
+        headers = {'technician_key': SDP_TOKEN}  # SDP API может ожидать 'technician_key' вместо 'authtoken'
+        logging.debug(f"Sending request to SDP API with headers: {headers}")
+        logging.debug(f"Request body: {input_data}")
         response = requests.post(SDP_URL, headers=headers, json=input_data, timeout=10)
         response.raise_for_status()
         data = response.json()
+        logging.debug(f"SDP API response: {data}")
         return data.get('requests', [])
     except Exception as e:
         logging.error(f"Ошибка при запросе к SDP API: {e}")
+        if isinstance(e, requests.exceptions.HTTPError):
+            logging.error(f"Response content: {e.response.text}")
         return []
 
 # Первоначальная загрузка существующих заявок (не закрытых)
