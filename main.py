@@ -77,13 +77,14 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
+        payload = {'input_data': json.dumps(input_data, ensure_ascii=False)}
         headers = {
             'authtoken': SDP_TOKEN,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
         logging.debug(f"Sending request to SDP API with headers: {headers}")
         logging.debug(f"Request body: {json.dumps(input_data, ensure_ascii=False, indent=2)}")
-        response = requests.post(SDP_URL, headers=headers, json=input_data, timeout=10)
+        response = requests.post(SDP_URL, headers=headers, data=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         logging.debug(f"SDP API response: {data}")
@@ -313,12 +314,12 @@ def cmd_sutki(message):
             "search_criteria": [
                 {
                     "field": "created_time",
-                    "condition": "greater or equal",
+                    "condition": "greater than or equal to",
                     "value": str(since_ms)
                 }
             ],
             "sort_field": "created_time",
-            "sort_order": "ascending"
+            "sort_order": "asc"
         }
     }
     recent_reqs = fetch_requests(input_data)
