@@ -84,9 +84,12 @@ def fetch_requests(list_info):
             'authtoken': SDP_TOKEN,
             'Content-Type': 'application/json'
         }
-        payload = {"input_data": json.dumps(list_info, ensure_ascii=False)}
+        input_data_str = json.dumps(list_info, ensure_ascii=False)
+        payload = json.dumps({"input_data": input_data_str}, ensure_ascii=False)
+
         logging.debug(f"Отправка запроса к SDP API с заголовками: {headers}")
-        logging.debug(f"Тело запроса: {json.dumps(payload, ensure_ascii=False, indent=2)}")
+        logging.debug(f"Тело запроса: {payload}")
+
         response = requests.post(SDP_URL, headers=headers, data=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
