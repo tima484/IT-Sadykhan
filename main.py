@@ -13,28 +13,31 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # === Конфигурация ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SDP_TOKEN = os.getenv("SDP_API_KEY", "").strip()
-SDP_URL = os.getenv("SDP_URL", "[invalid url, do not cite]).strip()
+SDP_URL = os.getenv("SDP_URL", "").strip()  # Исправлено: пустая строка по умолчанию
 
 # Попытка получить публичный домен от Railway
 BASE_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
 if not BASE_URL:
-    logging.warning("RAILWAY_PUBLIC_DOMAIN not set. Falling back to polling mode.")
+    logging.warning("RAILWAY_PUBLIC_DOMAIN не установлен. Переход в режим опроса.")
     USE_WEBHOOK = False
 else:
-    WEBHOOK_URL = f"[invalid url, do not cite]
+    WEBHOOK_URL = f"https://{BASE_URL}/bot{BOT_TOKEN}"
     USE_WEBHOOK = True
     logging.info(f"Webhook URL: {WEBHOOK_URL}")
 
 # Проверка токенов
 if not BOT_TOKEN or ':' not in BOT_TOKEN:
-    logging.error("Invalid BOT_TOKEN. Please check your environment variables in Railway.")
-    raise ValueError("Invalid BOT_TOKEN. It must contain a colon and be set in Railway variables.")
+    logging.error("Недействительный BOT_TOKEN. Проверьте переменные окружения в Railway.")
+    raise ValueError("Недействительный BOT_TOKEN. Он должен содержать двоеточие и быть установлен в переменных Railway.")
 if not SDP_TOKEN:
-    logging.error("SDP_API_KEY not found or empty in environment variables.")
-    raise ValueError("SDP_API_KEY not found or empty in environment variables.")
+    logging.error("SDP_API_KEY не найден или пуст в переменных окружения.")
+    raise ValueError("SDP_API_KEY не найден или пуст в переменных окружения.")
+if not SDP_URL:
+    logging.error("SDP_URL не установлен в переменных окружения.")
+    raise ValueError("SDP_URL должен быть установлен в переменных окружения Railway.")
 
-logging.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}...")
-logging.info(f"SDP_API_KEY loaded: {SDP_TOKEN[:5]}...")
+logging.info(f"BOT_TOKEN загружен: {BOT_TOKEN[:10]}...")
+logging.info(f"SDP_API_KEY загружен: {SDP_TOKEN[:5]}...")
 
 # Инициализация бота
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='Markdown')
@@ -77,14 +80,14 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(list_info):
     try:
-        input_data = {"input_data": json.dumps(list_info, ensure_ascii=False)}
+        payload = {"input_data": list_info}
         headers = {
             'authtoken': SDP_TOKEN,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/json'
         }
         logging.debug(f"Отправка запроса к SDP API с заголовками: {headers}")
-        logging.debug(f"Тело запроса: {json.dumps(input_data, ensure_ascii=False, indent=2)}")
-        response = requests.get(SDP_URL, headers=headers, data=input_data, timeout=10)
+        logging.debug(f"Тело запроса: {json.dumps(payload, ensure_ascii=False, indent=2)}")
+        response = requests.post(SDP_URL, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         logging.debug(f"Ответ SDP API: {data}")
@@ -98,19 +101,21 @@ def fetch_requests(list_info):
 # Первоначальная загрузка существующих заявок (не закрытых)
 def load_initial_requests():
     list_info = {
-        "row_count": 100,
-        "start_index": 1,
-        "search_criteria": [
-            {
-                "field": "status.name",
-                "condition": "is not",
-                "value": "Закрыто"
-            }
-        ]
+        "list_info": {
+            "row_count": 100,
+            "start_index": 1,
+            "search_criteria": [
+                {
+                    "field": "status.name",
+                    "condition": "is not",
+                    "value": "Закрыто"
+                }
+            ]
+        }
     }
     start_index = 1
     while True:
-        list_info["start_index"] = start_index
+        list_info["list_info"]["start_index"] = start_index
         requests_batch = fetch_requests(list_info)
         if not requests_batch:
             break
@@ -131,10 +136,10 @@ def load_initial_requests():
                 "resolved_time": req.get('resolved_time', {}).get('value'),
                 "completed_time": req.get('completed_time', {}).get('value')
             }
-        if len(requests_batch) < list_info["row_count"]:
+        if len(requests_batch) < list_info["list_info"]["row_count"]:
             break
         start_index += len(requests_batch)
-    logging.info(f"Initial load: {len(known_requests)} requests tracked.")
+    logging.info(f"Начальная загрузка: {len(known_requests)} заявок отслеживается.")
 
 # Фоновая функция опроса API каждые 60 секунд
 def poll_sdp():
@@ -142,14 +147,16 @@ def poll_sdp():
     while True:
         now_ms = int(time.time() * 1000)
         list_info = {
-            "row_count": 100,
-            "search_criteria": [
-                {
-                    "field": "last_updated_time",
-                    "condition": "greater than",
-                    "value": str(last_check)
-                }
-            ]
+            "list_info": {
+                "row_count": 100,
+                "search_criteria": [
+                    {
+                        "field": "last_updated_time",
+                        "condition": "greater than",
+                        "value": str(last_check)
+                    }
+                ]
+            }
         }
         updates = fetch_requests(list_info)
         last_check = now_ms
@@ -191,14 +198,14 @@ def poll_sdp():
                             "♻️ Обновлена заявка",
                             f"📌 Тема: {escape_md(subject)}",
                             *changes,
-                            f"🔗 [Открыть заявку]([invalid url, do not cite])"
+                            f"🔗 [Открыть заявку](https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={req_id})"
                         ]
                         msg_text = "\n".join(msg_lines)
                         for chat_id in list(subscribers):
                             try:
                                 bot.send_message(chat_id, msg_text)
                             except Exception as e:
-                                logging.error(f"Error sending update to {chat_id}: {e}")
+                                logging.error(f"Ошибка отправки обновления на {chat_id}: {e}")
                     known_requests[req_id] = {
                         "subject": subject, "author": author,
                         "tech": tech_name, "status": status_name,
@@ -215,13 +222,13 @@ def poll_sdp():
                         f"🔧 Назначено: {escape_md(tech_name)}\n"
                         f"⚙️ Статус: {escape_md(status_name)}\n"
                         f"📅 Дата создания: {escape_md(created_disp)}\n"
-                        f"🔗 [Открыть заявку]([invalid url, do not cite])"
+                        f"🔗 [Открыть заявку](https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={req_id})"
                     )
                     for chat_id in list(subscribers):
                         try:
                             bot.send_message(chat_id, msg_text)
                         except Exception as e:
-                            logging.error(f"Error sending new ticket to {chat_id}: {e}")
+                            logging.error(f"Ошибка отправки новой заявки на {chat_id}: {e}")
                     known_requests[req_id] = {
                         "subject": subject, "author": author,
                         "tech": tech_name, "status": status_name,
@@ -259,14 +266,14 @@ def poll_sdp():
                         "♻️ Обновлена заявка",
                         f"📌 Тема: {escape_md(subject)}",
                         *changes,
-                        f"🔗 [Открыть заявку]([invalid url, do not cite])"
+                        f"🔗 [Открыть заявку](https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={req_id})"
                     ]
                     msg_text = "\n".join(msg_lines)
                     for chat_id in list(subscribers):
                         try:
                             bot.send_message(chat_id, msg_text)
                         except Exception as e:
-                            logging.error(f"Error sending update to {chat_id}: {e}")
+                            logging.error(f"Ошибка отправки обновления на {chat_id}: {e}")
                 old['status'] = status_name
                 old['tech'] = tech_name
                 old['assigned_time'] = assigned_val or old.get('assigned_time')
@@ -294,16 +301,18 @@ def cmd_sutki(message):
     chat_id = message.chat.id
     since_ms = int(time.time() * 1000) - 24*60*60*1000
     list_info = {
-        "row_count": 100,
-        "search_criteria": [
-            {
-                "field": "created_time",
-                "condition": "greater than or equal to",
-                "value": str(since_ms)
-            }
-        ],
-        "sort_field": "created_time",
-        "sort_order": "asc"
+        "list_info": {
+            "row_count": 100,
+            "search_criteria": [
+                {
+                    "field": "created_time",
+                    "condition": "greater than or equal to",
+                    "value": str(since_ms)
+                }
+            ],
+            "sort_field": "created_time",
+            "sort_order": "asc"
+        }
     }
     recent_reqs = fetch_requests(list_info)
     if not recent_reqs:
@@ -326,7 +335,7 @@ def cmd_sutki(message):
             f"🔧 Назначено: {escape_md(tech_name)}\n"
             f"⚙️ Статус: {escape_md(status_name)}\n"
             f"📅 Дата создания: {escape_md(created_disp)}\n"
-            f"🔗 [Открыть заявку]([invalid url, do not cite])\n\n"
+            f"🔗 [Открыть заявку](https://sd.sadykhan.kz/WorkOrder.do?woMode=viewWO&woID={req_id})\n\n"
         )
         if len(result_text) + len(entry) > 4000:
             messages.append(result_text)
@@ -338,7 +347,7 @@ def cmd_sutki(message):
         try:
             bot.send_message(chat_id, text)
         except Exception as e:
-            logging.error(f"Error sending sutki message: {e}")
+            logging.error(f"Ошибка отправки сообщения sutki: {e}")
             bot.send_message(chat_id, text, parse_mode=None)
 
 # Flask-приложение для Railway
@@ -378,12 +387,12 @@ if __name__ == "__main__":
         # Устанавливаем новый вебхук
         webhook_response = bot.set_webhook(url=WEBHOOK_URL)
         if webhook_response:
-            logging.info(f"Webhook set successfully: {WEBHOOK_URL}")
+            logging.info(f"Webhook успешно установлен: {WEBHOOK_URL}")
         else:
-            logging.error("Failed to set webhook.")
-            raise ValueError("Failed to set webhook. Check the WEBHOOK_URL and network accessibility.")
+            logging.error("Не удалось установить вебхук.")
+            raise ValueError("Не удалось установить вебхук. Проверьте WEBHOOK_URL и доступность сети.")
     else:
-        logging.warning("Running in polling mode due to missing RAILWAY_PUBLIC_DOMAIN.")
+        logging.warning("Работа в режиме опроса из-за отсутствия RAILWAY_PUBLIC_DOMAIN.")
         bot_thread = threading.Thread(target=lambda: bot.polling(none_stop=True, timeout=60))
         bot_thread.daemon = True
         bot_thread.start()
