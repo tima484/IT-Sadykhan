@@ -80,14 +80,14 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(list_info):
     try:
-        payload = {"input_data": list_info}
         headers = {
             'authtoken': SDP_TOKEN,
             'Content-Type': 'application/json'
         }
+        payload = {"input_data": json.dumps(list_info, ensure_ascii=False)}
         logging.debug(f"Отправка запроса к SDP API с заголовками: {headers}")
         logging.debug(f"Тело запроса: {json.dumps(payload, ensure_ascii=False, indent=2)}")
-        response = requests.post(SDP_URL, headers=headers, json=payload, timeout=10)
+        response = requests.post(SDP_URL, headers=headers, data=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         logging.debug(f"Ответ SDP API: {data}")
@@ -176,7 +176,7 @@ def poll_sdp():
             completed_val = req.get('completed_time', {}).get('value') if req.get('completed_time') else None
 
             if req_id not in known_requests:
-                if created_val and created_val < startup_time_ms:
+                if created_val and int(created_val) < startup_time_ms:
                     old_status = "Закрыто" if (completed_val and status_name != "Закрыто") else "неизвестно"
                     old_tech = "не назначен"
                     changes = []
