@@ -77,15 +77,13 @@ def format_duration(ms):
 # Функция для выполнения запроса к API ServiceDesk Plus
 def fetch_requests(input_data):
     try:
-        # Формируем тело запроса с ключом input_data
-        payload = {'input_data': json.dumps(input_data, ensure_ascii=False)}
         headers = {
             'authtoken': SDP_TOKEN,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/json'
         }
         logging.debug(f"Sending request to SDP API with headers: {headers}")
-        logging.debug(f"Request body: {payload}")
-        response = requests.post(SDP_URL, headers=headers, data=payload, timeout=10)
+        logging.debug(f"Request body: {json.dumps(input_data, ensure_ascii=False, indent=2)}")
+        response = requests.post(SDP_URL, headers=headers, json=input_data, timeout=10)
         response.raise_for_status()
         data = response.json()
         logging.debug(f"SDP API response: {data}")
@@ -100,17 +98,19 @@ def fetch_requests(input_data):
 def load_initial_requests():
     input_data = {
         "list_info": {
+            "row_count": 100,
+            "start_index": 1,
             "fields_required": [
                 "id", "subject", "requester", "technician", "status",
                 "created_time", "assigned_time", "resolved_time", "completed_time"
             ],
-            "search_criteria": {
-                "field": "status.name",
-                "condition": "is not",
-                "values": ["Закрыто"]
-            },
-            "start_index": 1,
-            "row_count": 100
+            "search_criteria": [
+                {
+                    "field": "status.name",
+                    "condition": "is not",
+                    "value": "Закрыто"
+                }
+            ]
         }
     }
     start_index = 1
@@ -148,16 +148,18 @@ def poll_sdp():
         now_ms = int(time.time() * 1000)
         input_data = {
             "list_info": {
+                "row_count": 100,
                 "fields_required": [
                     "id", "subject", "requester", "technician", "status",
                     "created_time", "assigned_time", "resolved_time", "completed_time", "last_updated_time"
                 ],
-                "search_criteria": {
-                    "field": "last_updated_time",
-                    "condition": "greater than",
-                    "value": str(last_check)
-                },
-                "row_count": 100
+                "search_criteria": [
+                    {
+                        "field": "last_updated_time",
+                        "condition": "greater than",
+                        "value": str(last_check)
+                    }
+                ]
             }
         }
         updates = fetch_requests(input_data)
@@ -304,17 +306,19 @@ def cmd_sutki(message):
     since_ms = int(time.time() * 1000) - 24*60*60*1000
     input_data = {
         "list_info": {
+            "row_count": 100,
             "fields_required": [
                 "id", "subject", "requester", "technician", "status", "created_time"
             ],
-            "search_criteria": {
-                "field": "created_time",
-                "condition": "greater or equal",
-                "value": str(since_ms)
-            },
+            "search_criteria": [
+                {
+                    "field": "created_time",
+                    "condition": "greater or equal",
+                    "value": str(since_ms)
+                }
+            ],
             "sort_field": "created_time",
-            "sort_order": "ascending",
-            "row_count": 100
+            "sort_order": "ascending"
         }
     }
     recent_reqs = fetch_requests(input_data)
