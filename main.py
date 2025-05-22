@@ -1,4 +1,4 @@
-# main.py — адаптирован под Railway + Gunicorn + Flask + auto webhook cleanup
+# main.py — полностью рабочий бот Telegram + SDP + Railway + long polling + логирование
 
 import requests
 import time
@@ -33,8 +33,7 @@ def send_telegram_message(chat_id, text):
     except requests.exceptions.HTTPError as e:
         if r.status_code == 403:
             subscribed_chats.discard(chat_id)
-        else:
-            print(f"Telegram HTTPError: {e}")
+        print(f"Telegram HTTPError: {e}")
     except Exception as ex:
         print(f"Telegram Exception: {ex}")
 
@@ -129,6 +128,7 @@ def telegram_bot():
                     continue
                 chat_id = msg["chat"]["id"]
                 text = msg.get("text", "").lower().strip()
+                print(f"📩 Получено сообщение: {text} от {chat_id}")
                 if text in ("/start", "start"):
                     subscribed_chats.add(chat_id)
                     send_telegram_message(chat_id, "✅ Подписка активна.")
