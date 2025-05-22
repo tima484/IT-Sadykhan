@@ -1,4 +1,4 @@
-# main.py — адаптирован под Railway + Gunicorn + Flask
+# main.py — адаптирован под Railway + Gunicorn + Flask + auto webhook cleanup
 
 import requests
 import time
@@ -16,6 +16,13 @@ PORT = int(os.getenv("PORT", 5000))
 app = Flask(__name__)
 subscribed_chats = set()
 known_requests = {}
+
+def disable_webhook_on_start():
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=5)
+        print("✅ Webhook отключён автоматически:", r.json())
+    except Exception as e:
+        print("⚠️ Не удалось отключить Webhook:", e)
 
 def send_telegram_message(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -141,6 +148,7 @@ def home():
     return "SDP Bot is running!"
 
 if __name__ == "__main__":
+    disable_webhook_on_start()
     threading.Thread(target=telegram_bot, daemon=True).start()
     threading.Thread(target=check_sdp, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT)
